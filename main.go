@@ -75,17 +75,20 @@ func (r *NF5json) serialize() ([]byte, error) {
 
 }
 func handlePacket(in chan []byte, out chan NF5Record) {
-	var header NF5Header
+	var (
+		header NF5Header
+		record NF5Record
+		offset uint16
+		i      uint16
+	)
 	for buf := range in {
+		offset = 0
 		buffer := bytes.NewReader(buf[:NF5HeaderLen])
 		err := binary.Read(buffer, binary.BigEndian, &header)
 		if err == nil {
 			if header.Version == 5 {
-				var i uint16
 				buf = buf[NF5HeaderLen:]
-				var offset uint16
 				for i = 1; i <= header.Count; i += 1 {
-					var record NF5Record
 					buffer = bytes.NewReader(buf[offset : NF5RecordLen*i])
 					e := binary.Read(buffer, binary.BigEndian, &record)
 					if e == nil {
