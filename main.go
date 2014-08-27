@@ -74,42 +74,34 @@ func (r *NF5json) serialize() ([]byte, error) {
 	return t, nil
 
 }
-func handlePacket(buf []byte, rlen int, ch chan NF5Record) {
+func handlePacket(in chan []byte, out chan NF5Record) {
 	var header NF5Header
-	buffer := bytes.NewReader(buf[:NF5HeaderLen])
-	err := binary.Read(buffer, binary.BigEndian, &header)
-	if err == nil {
-		if header.Version == 5 {
-			var i uint16
-			buf = buf[NF5HeaderLen:]
-			var offset uint16
-			for i = 1; i <= header.Count; i += 1 {
-				var record NF5Record
-
-				buffer = bytes.NewReader(buf[offset : NF5RecordLen*i])
-				e := binary.Read(buffer, binary.BigEndian, &record)
-				if e == nil {
-					ch <- record
+	for buf := range in {
+		buffer := bytes.NewReader(buf[:NF5HeaderLen])
+		err := binary.Read(buffer, binary.BigEndian, &header)
+		if err == nil {
+			if header.Version == 5 {
+				var i uint16
+				buf = buf[NF5HeaderLen:]
+				var offset uint16
+				for i = 1; i <= header.Count; i += 1 {
+					var record NF5Record
+					buffer = bytes.NewReader(buf[offset : NF5RecordLen*i])
+					e := binary.Read(buffer, binary.BigEndian, &record)
+					if e == nil {
+						out <- record
+					}
+					offset = NF5RecordLen * i
 				}
-				offset = NF5RecordLen * i
-
 			}
 		}
-		//fmt.Printf("%+v\n", header)
 	}
-	//fmt.Println(string(buf[0:rlen]))
 }
 func zmqpublisher(socket *zmq.Socket, ch chan NF5Record) {
-	_, ipnet, _ := net.ParseCIDR("192.16.0.0/12")
 	for {
 		r := <-ch
-		//msg := fmt.Sprintf("%+v\n", r)
 		sip := uint32toip(r.SourceIPaddr)
 		dip := uint32toip(r.Destination)
-		saddr := net.ParseIP(sip)
-		if ipnet.Contains(saddr) {
-			fmt.Println("conta")
-		}
 		nf5 := NF5json{SourceIPaddr: sip,
 			SourcePort:        r.SourcePort,
 			DestinationIPaddr: dip,
@@ -126,17 +118,21 @@ func zmqpublisher(socket *zmq.Socket, ch chan NF5Record) {
 	}
 }
 func main() {
-	var zmqbind string
-	udpPtr := flag.Int("port", 12000, "Listen UDP port")
+	var (
+		zmqbind string
+	)
+	udpPort := flag.Int("port", 12000, "Listen UDP port")
+	workers := flag.Int("workers", 128, "Count of workers")
 	flag.StringVar(&zmqbind, "zmq", "tcp://*:5557", "ZeroMQ bind parameter")
 	flag.Parse()
-	addr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", *udpPtr))
+	addr, _ := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", *udpPort))
 	sock, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		log.Fatalln(err)
 	}
 	sock.SetReadBuffer(1048576)
-	ch := make(chan NF5Record)
+	out := make(chan NF5Record)
+	in := make(chan []byte)
 	socket, _ := zmq.NewSocket(zmq.PUB)
 	defer socket.Close()
 	err = socket.Bind(zmqbind)
@@ -144,13 +140,17 @@ func main() {
 		log.Fatalln("Unable to start 0MQ socket", err)
 	}
 	log.Println("Started")
-	go zmqpublisher(socket, ch)
+	go zmqpublisher(socket, out)
+	for i := 0; i < *workers; i++ {
+		go handlePacket(in, out)
+	}
+	buf := make([]byte, 1500)
 	for {
-		buf := make([]byte, 1500)
-		rlen, _, err := sock.ReadFromUDP(buf)
+		_, _, err := sock.ReadFromUDP(buf)
 		if err != nil {
 			fmt.Println(err)
+			continue
 		}
-		go handlePacket(buf, rlen, ch)
+		in <- buf
 	}
 }
